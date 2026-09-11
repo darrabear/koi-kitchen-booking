@@ -754,7 +754,6 @@ function AdminView() {
         >
           Unlock
         </button>
-        <div style={styles.demoNote}>Demo passcode: {ADMIN_CODE} — replace with real auth for production.</div>
       </div>
     );
   }
