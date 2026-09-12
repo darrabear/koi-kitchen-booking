@@ -767,11 +767,10 @@ function AdminBoard() {
   const { bookings, loaded, save, reload } = useBookings(4000);
   const dates = useRef(makeDates()).current;
   const slots = useRef(makeSlots()).current;
-  const [court, setCourt] = useState("1");
   const [dayIdx, setDayIdx] = useState(0);
   const [viewing, setViewing] = useState(null); // existing booking being viewed
   const [viewingRecurring, setViewingRecurring] = useState(null); // recurring rule being viewed (read-only)
-  const [blocking, setBlocking] = useState(null); // { hour } — open slot being blocked
+  const [blocking, setBlocking] = useState(null); // { hour, court } — open slot being blocked
   const [blockLabel, setBlockLabel] = useState("Internal hold");
   const [blockNote, setBlockNote] = useState("");
   const [editingDetails, setEditingDetails] = useState(false);
@@ -782,9 +781,13 @@ function AdminBoard() {
   const activeDate = dates[dayIdx];
   const activeKey = dateKey(activeDate);
 
-  const dayBookings = bookings
-    .filter((b) => b.dateKey === activeKey && b.court === court)
-    .sort((a, b) => a.hour - b.hour);
+  function cellInfo(hour, c) {
+    const b = bookings.find((x) => x.dateKey === activeKey && x.hour === hour && x.court === c);
+    if (b) return { status: b.status, booking: b };
+    const r = getRecurringBlock(activeDate, activeKey, hour, c);
+    if (r) return { status: "blocked", recurring: r };
+    return { status: "open" };
+  }
 
   async function updateStatus(ids, status) {
     const idSet = new Set(ids);
@@ -823,10 +826,10 @@ function AdminBoard() {
 
   async function confirmBlock() {
     const newBlock = {
-      id: `${activeKey}-${court}-${blocking.hour}-${Date.now()}`,
+      id: `${activeKey}-${blocking.court}-${blocking.hour}-${Date.now()}`,
       dateKey: activeKey,
       dateLabel: fmtDateLabel(activeDate),
-      court,
+      court: blocking.court,
       hour: blocking.hour,
       name: blockLabel.trim() || "Internal hold",
       phone: "",
@@ -843,11 +846,14 @@ function AdminBoard() {
 
   const summary = dates.map((d) => {
     const key = dateKey(d);
-    const dayB = bookings.filter((b) => b.dateKey === key && b.court === court);
+    const dayB = bookings.filter((b) => b.dateKey === key);
     const confirmed = dayB.filter((b) => b.status === "confirmed").length;
     const pending = dayB.filter((b) => b.status === "pending").length;
-    const recurringCount = slots.filter((h) => !dayB.find((b) => b.hour === h) && getRecurringBlock(d, key, h, court)).length;
-    return { key, confirmed, pending, blocked: recurringCount, total: slots.length };
+    const recurringCount = COURTS.reduce(
+      (sum, c) => sum + slots.filter((h) => !dayB.find((b) => b.hour === h && b.court === c.id) && getRecurringBlock(d, key, h, c.id)).length,
+      0
+    );
+    return { key, confirmed, pending, blocked: recurringCount, total: slots.length * COURTS.length };
   });
 
   return (
@@ -858,18 +864,6 @@ function AdminBoard() {
           <RefreshCw size={14} /> Refresh
         </button>
       </div>
-
-      <section style={styles.courtRow}>
-        {COURTS.map((c) => (
-          <button
-            key={c.id}
-            onClick={() => setCourt(c.id)}
-            style={{ ...styles.courtBtn, ...(court === c.id ? styles.courtBtnActive : {}) }}
-          >
-            {c.label}
-          </button>
-        ))}
-      </section>
 
       <div style={styles.miniCalRow}>
         {summary.map((s, i) => (
@@ -887,58 +881,58 @@ function AdminBoard() {
           </button>
         ))}
       </div>
-      <div style={styles.legendRow}>
-        <Legend color="#C97B5A" label="confirmed" />
-        <Legend color="#7FB0D9" label="pending" />
-        <Legend color="#6B6470" label="blocked (internal / recurring)" />
+
+      <div style={styles.gridLegendRow}>
+        <Legend color="#8FD4A8" outline="#3E6E52" label="Available" />
+        <Legend color="#E8998A" outline="#8C5A5A" label="Reserved" />
+        <Legend color="#9C93A0" outline="#C7C0C9" label="Blocked" />
       </div>
-      <div style={styles.hintNote}>Tap an open slot to block it for internal use. Tap a booking to review, confirm, or free it.</div>
+      <div style={styles.hintNote}>Tap an open slot to block it for internal use. Tap a booking to review, confirm, edit, or free it.</div>
 
       {!loaded ? (
         <div style={styles.loading}>Loading…</div>
       ) : (
-        <section style={styles.grid}>
-          {slots.map((h) => {
-            const b = dayBookings.find((b) => b.hour === h);
-            const recurring = !b ? getRecurringBlock(activeDate, activeKey, h, court) : null;
-            const status = b ? b.status : recurring ? "blocked" : "open";
-            return (
-              <div
-                key={h}
-                style={{
-                  ...styles.slot,
-                  ...styles.adminSlot,
-                  ...(status === "confirmed" ? styles.slotBooked : {}),
-                  ...(status === "pending" ? styles.slotPending : {}),
-                  ...(status === "blocked" ? styles.slotBlocked : {}),
-                }}
-                onClick={() => {
-                  if (b) { setViewing(b); setEditingDetails(false); }
-                  else if (recurring) setViewingRecurring({ ...recurring, hour: h });
-                  else setBlocking({ hour: h });
-                }}
-              >
-                <span style={styles.slotTime}>{fmtHour(h)}</span>
-                {b ? (
-                  <>
-                    <span style={styles.adminSlotName}>{b.name}{b.free ? " · FREE" : ""}</span>
-                    <span style={styles.slotLabel}>
-                      {status === "confirmed" ? "Confirmed" : status === "blocked" ? "Blocked" : "Tap to review"}
-                      {b.groupId ? " · multi-hr" : ""}
-                    </span>
-                  </>
-                ) : recurring ? (
-                  <>
-                    <span style={styles.adminSlotName}>{recurring.name}</span>
-                    <span style={styles.slotLabel}>Recurring</span>
-                  </>
-                ) : (
-                  <span style={styles.slotLabel}>Open · tap to block</span>
-                )}
-              </div>
-            );
-          })}
-        </section>
+        <div style={styles.gridScrollWrap}>
+          <table style={styles.bookingGrid}>
+            <thead>
+              <tr>
+                <th style={styles.gridCornerCell}></th>
+                {COURTS.map((c) => (
+                  <th key={c.id} style={styles.gridCourtHeader}>{c.label}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {slots.map((h) => (
+                <tr key={h}>
+                  <td style={styles.gridTimeCell}>{fmtHour(h)}</td>
+                  {COURTS.map((c) => {
+                    const info = cellInfo(h, c.id);
+                    const { status, booking: b, recurring } = info;
+                    return (
+                      <td key={c.id} style={styles.gridCellTd}>
+                        <button
+                          onClick={() => {
+                            if (b) { setViewing(b); setEditingDetails(false); }
+                            else if (recurring) setViewingRecurring({ ...recurring, hour: h });
+                            else setBlocking({ hour: h, court: c.id });
+                          }}
+                          style={{
+                            ...styles.gridCell,
+                            ...((status === "confirmed" || status === "pending") ? styles.gridCellReserved : {}),
+                            ...(status === "blocked" ? styles.gridCellBlocked : {}),
+                          }}
+                        >
+                          {b ? `${b.name}${b.free ? " · FREE" : ""}` : recurring ? recurring.name : `₱${RATE_PER_HOUR}`}
+                        </button>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       {viewing && (() => {
@@ -978,7 +972,7 @@ function AdminBoard() {
                     <div>
                       <div style={styles.modalName}>{viewing.name}</div>
                       <div style={styles.modalMeta}>
-                        {viewing.dateLabel} · {rangeLabel}{group.length > 1 ? ` (${group.length} hrs)` : ""}{viewing.phone ? ` · ${viewing.phone}` : ""}
+                        Court {[...new Set(group.map((b) => b.court))].sort().join(" & ")} · {viewing.dateLabel} · {rangeLabel}{group.length > 1 ? ` (${group.length} hrs)` : ""}{viewing.phone ? ` · ${viewing.phone}` : ""}
                       </div>
                       {viewing.status !== "blocked" && (
                         <div style={styles.modalAmount}>
@@ -1037,7 +1031,7 @@ function AdminBoard() {
             <div style={styles.modalHeader}>
               <div>
                 <div style={styles.modalName}>Block this slot</div>
-                <div style={styles.modalMeta}>Court {court} · {fmtDateLabel(activeDate)} · {fmtHour(blocking.hour)}</div>
+                <div style={styles.modalMeta}>Court {blocking.court} · {fmtDateLabel(activeDate)} · {fmtHour(blocking.hour)}</div>
               </div>
               <button onClick={() => setBlocking(null)} style={styles.iconBtn}><X size={18} /></button>
             </div>
@@ -1075,7 +1069,7 @@ function AdminBoard() {
                 <div>
                   <div style={styles.modalName}>{viewingRecurring.name}</div>
                   <div style={styles.modalMeta}>
-                    Court {court} · {fmtDateLabel(activeDate)} · {isOneOff ? "one-off hold" : "recurring every week"}
+                    {fmtDateLabel(activeDate)} · {isOneOff ? "one-off hold" : "recurring every week"}
                   </div>
                 </div>
                 <button onClick={() => setViewingRecurring(null)} style={styles.iconBtn}><X size={18} /></button>
